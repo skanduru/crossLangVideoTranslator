@@ -56,3 +56,19 @@ python3.11 transcribe_video_tel2eng.py
 
 If you face issues while executing the project, check the AWS CloudWatch Logs for error messages. Make sure the IAM roles and policies are correctly set to give AWS services the required permissions.
 
+To check the lambda logs:
+
+```bash
+aws logs get-log-events --log-group-name "/aws/lambda/TranscriptionLambda --start '3h ago'" --log-stream-name "YourStreamName" --region us-west-1
+```
+
+to stream your logs directly to your console
+
+```bash
+aws logs tail /aws/lambda/YourFunctionName --follow --region us-west-1
+```
+
+```bash
+awslogs get /aws/lambda/<MyLambdaFunction> --start='3h ago' --aws-region=us-west-1
+```
+

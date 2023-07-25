@@ -1,3 +1,4 @@
+
 import os
 import time
 import sys
@@ -10,7 +11,8 @@ import botocore
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def start_transcription_job(bucket, job_name, job_uri, language, service_role_arn):
-    transcribe = boto3.client('transcribe')
+    transcribe = boto3.client('transcribe', region_name = "us-west-1")
+    logs = boto3.client('logs')
 
     try:
         response = transcribe.start_transcription_job(
@@ -25,6 +27,7 @@ def start_transcription_job(bucket, job_name, job_uri, language, service_role_ar
             },
             ServiceRoleArn=service_role_arn,
         )
+
         return response['TranscriptionJob']['TranscriptionJobName']
     except botocore.exceptions.BotoCoreError as error:
         print(f"Error starting transcription job: {error}")
@@ -32,21 +35,24 @@ def start_transcription_job(bucket, job_name, job_uri, language, service_role_ar
 
 
 def handler(event, context):
+    logging.info(f"L: Entered function transcribe_audio:handle")
     # Extract bucket and video key from the event payload
     bucket = event['bucket']
     media = event['media']
 
-    region_name = 'us-west-1'
     logging.info(f"L: Received {media} for transcription")
 
     # Use Amazon Transcribe to transcribe the audio
     language_code = os.environ["LANGUAGE_CODE"]  # Source lang code
     target_language_code = os.environ["TARGET_LANGUAGE_CODE"]  # Dst lang code
 
-    job_name = "tel2engTranscription".format(int(time.time()))
+    job_name = "tel2engTranscription-{}".format(int(time.time()))
     job_uri  = f"s3://{bucket}/{media}"
     # Transcribe the audio from Telugu to English
     service_role_arn = os.environ.get('TRANSCRIBE_ROLE_ARN')
+    logging.info(f"job_name: {job_name}, job_uri: {job_uri}, service_role_arn: {service_role_arn}")
     jobName = start_transcription_job(bucket, job_name, job_uri, language_code, service_role_arn)
     logging.info(f"L: Transcription started: {jobName}")
     return  jobName
+
+

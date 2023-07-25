@@ -4,8 +4,11 @@ import os
 from aws_cdk import (
     aws_s3 as s3,
     aws_lambda as _lambda,
-    aws_s3_notifications as s3_notif,
     aws_iam as iam,
+    aws_logs as aws_logs,
+    aws_ssm as ssm,
+    aws_sns as sns,
+    aws_sns_subscriptions as sns_subs
 )
 import aws_cdk as cdk
 from constructs import Construct
@@ -16,133 +19,93 @@ class TeluguToEnglishTranscriptionStack(cdk.Stack):
     def __init__(self, scope: Construct, id: str, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
 
-        # S1. Create an S3 bucket to store the audio file
-        audio_bucket = s3.Bucket(self, "transcribeBucket")
+        # Bucket creation
+        audio_bucket = s3.Bucket(self, "TranscribeBucket", bucket_name="transcription-bucket")
 
-        transcribe_role = iam.Role(
+        # Save the bucket_name in ssm to be retrieved in the runscript.
+        ssm.StringParameter(
             self,
-            "TranscribeAccessRole",
-            assumed_by=iam.ServicePrincipal("transcribe.amazonaws.com"),
+            "BucketNameParameter",
+            parameter_name="BucketName",
+            string_value=audio_bucket.bucket_name
         )
 
-        transcribe_role.add_managed_policy(
-            iam.ManagedPolicy.from_aws_managed_policy_name('AmazonTranscribeFullAccess')
-        )
-
-        # S2. Create a Lambda function to trigger the transcription process
-        """
-         a. Make sure there is a directory called 'lambda'
-         b. With 'lambda' directory create a file called 'transcribe_audio.py'
-         c. In 'transcription_lambda.py' use boto3 to AWS transcribe
-        """
-        transcription_lambda = _lambda.Function(
+        # Creating single role for all Lambda functions
+        lambda_role = iam.Role(
             self,
-            "TranscriptionLambda",
-            runtime=_lambda.Runtime.PYTHON_3_8,
-            handler="transcribe_audio.handler",
-            code=_lambda.Code.from_asset("lambda"),
-            environment={
-                "AUDIO_BUCKET_NAME": audio_bucket.bucket_name,
-                "LANGUAGE_CODE": "te-IN",  # Telugu language code
-                "TARGET_LANGUAGE_CODE": "en-US",  # English language code
-                "TRANSCRIBE_ROLE_ARN": transcribe_role.role_arn
-            }
+            "LambdaRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
         )
-        function_id = "TranscriptionLambda"
-        self.create_parameter("myapplication", function_id, transcription_lambda.function_name)
 
-        audio_bucket.grant_read(transcribe_role)
-        audio_bucket.grant_read_write(transcription_lambda.role)
-        
-        transcribe_role.add_to_policy(
+        # Add policies to the role
+        lambda_role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name('AmazonTranscribeFullAccess'))
+        lambda_role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name('service-role/AWSLambdaBasicExecutionRole'))
+        lambda_role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name('TranslateReadOnly'))
+
+        # Custom PolicyStatement for S3 and Polly
+        lambda_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["s3:GetObject", "s3:PutObject"],
-                resources=[f"arn:aws:s3:::{audio_bucket.bucket_name}/*"]
+                actions=["s3:GetObject", "s3:PutObject", "s3:ListBucket", "polly:SynthesizeSpeech"],
+                resources=[f"{audio_bucket.bucket_arn}/*", f"arn:aws:polly:us-west-1:{cdk.Aws.ACCOUNT_ID}:lexicon/*"]
             )
         )
 
-        transcribe_policy = iam.PolicyStatement(
-            actions=["transcribe:StartTranscriptionJob",
-                     "transcribe:GetTranscriptionJob"],
-            resources=["*"])
+        # Transcription Lambda
+        transcription_lambda = self.create_lambda_function(audio_bucket, "TranscriptionLambda", "transcribe_audio.handler")
 
-        transcription_lambda.add_to_role_policy(transcribe_policy)
+        # Translate Lambda
+        translate_lambda = self.create_lambda_function(audio_bucket, "TranslateLambda", "translate_text.handler")
 
+        # Synthesize Lambda
+        synthesize_lambda = self.create_lambda_function(audio_bucket, "SynthesizeLambda", "synthesize_speech.synthesize_speech")
 
-        # Grant the Lambda function permission to access the S3 bucket
-        audio_bucket.grant_read(transcription_lambda)
+    def create_lambda_function(self, audio_bucket, function_id, handler):
 
-        translate_lambda = _lambda.Function(
+        lambda_role = iam.Role(
             self,
-            "TranslateLambda",
+            f"{function_id}LambdaRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+        )
+
+        lambda_func = _lambda.Function(
+            self,
+            function_id,
             runtime=_lambda.Runtime.PYTHON_3_8,
-            handler="translate_text.handler",
+            handler=handler,
             code=_lambda.Code.from_asset("lambda"),
+            role=lambda_role,  # Use common role
             environment={
                 "AUDIO_BUCKET_NAME": audio_bucket.bucket_name,
-                "LANGUAGE_CODE": "te-IN",  # Telugu language code
-                "TARGET_LANGUAGE_CODE": "en-US"  # English language code
+                "LANGUAGE_CODE": "te-IN",
+                "TARGET_LANGUAGE_CODE": "en-US"
             }
         )
-        function_id = "TranslateLambda"
-        self.create_parameter("myapplication", function_id, translate_lambda.function_name)
 
-        # Set up an S3 event trigger for the Lambda function
-        audio_bucket.add_event_notification(
-            s3.EventType.OBJECT_CREATED,
-            s3_notif.LambdaDestination(transcription_lambda),
-            s3.NotificationKeyFilter(prefix="translated/")
-        )
+        self.create_parameter("myapplication", function_id, lambda_func)
 
-        # S3. Create a Lambda function to trigger the synthesis process
-        """
-         a. Make sure there is a directory called 'lambda'
-         b. With 'lambda' directory create a file called 'synthesize_speech.py'
-         c. In 'synthesize_speech.py' use boto3 to AWS polly
-        """
-        SynthesizeLambda = _lambda.Function(
-            self,
-            "SynthesizeLambda",
-            runtime=_lambda.Runtime.PYTHON_3_8,
-            handler="synthesize_speech.synthesize_speech",
-            code=_lambda.Code.from_asset("lambda"),
-            environment={
-                "AUDIO_BUCKET_NAME": audio_bucket.bucket_name,
-                "LANGUAGE_CODE": "te-IN",  # Telugu language code
-                "TARGET_LANGUAGE_CODE": "en-US"  # English language code
-            }
-        )
-        function_id = "SynthesizeLambda"
-        self.create_parameter("myapplication", function_id, SynthesizeLambda.function_name)
+        return lambda_func
 
+    def create_parameter(self, app_name, function_id, lambda_func):
 
-        # Grant the Lambda function permission to access the S3 bucket
-        audio_bucket.grant_read(SynthesizeLambda)
-
-        # Set up an S3 event trigger for the Lambda function
-        audio_bucket.add_event_notification(
-            s3.EventType.OBJECT_CREATED,
-            s3_notif.LambdaDestination(SynthesizeLambda),
-            s3.NotificationKeyFilter(prefix="audio/")
-        )
-
-    def create_parameter(self, app_name, function_id, function_name):
-        from aws_cdk import aws_ssm as ssm
-    
         param_name = f"/{app_name}/{function_id}FunctionName"
-    
-        ssm.StringParameter(
+
+        ssm_parameter = ssm.StringParameter(
             self,
             f"{function_id}FunctionNameParam",
             parameter_name=param_name,
-            string_value=function_name
+            string_value=lambda_func.function_name
         )
-    
+
+        # Assume that lambda_function is an instance of lambda_.Function
+        ssm_parameter.grant_read(lambda_func.role)
+
         return param_name
 
 
-
 app = cdk.App()
-TeluguToEnglishTranscriptionStack(app, "TeluguToEnglishTranscription")
+TeluguToEnglishTranscriptionStack(
+   app,
+   "TeluguToEnglishTranscription",
+   env=cdk.Environment(region='us-west-1')
+)
 app.synth()
-

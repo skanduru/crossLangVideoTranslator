@@ -1,18 +1,25 @@
+
 import logging
 import boto3
 import json
 import os
 
+import logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
 def synthesize_speech(event, context):
     # Extract bucket and english text from the event payload
+    logging.info(f"entering function synthesis_speech")
     bucket = event['bucket']
     english_text = event['synth_file']
 
     # Create an Amazon polly client
-    polly = boto3.client('polly')
+    polly = boto3.client('polly', region_name = "us-west-1")
 
     # Set the voice to a 60-year old man
-    voiceId = 'Mathew'
+    voiceId = 'Joanna'
 
     logging.info(f"received {english_text} for synthesis")
 
@@ -22,6 +29,7 @@ def synthesize_speech(event, context):
             OutputFormat='mp3',
             VoiceId=voiceId
         )
+        logging.info(f"synthesize_speech returned {response}")
 
         # Get the audio stream from the response
         audio_stream = response['AudioStream'].read()
@@ -43,7 +51,7 @@ def synthesize_speech(event, context):
 
 
 
-def synthesize_speech(event, context):
+def synthesize_speech2(event, context):
     # Extract the input text from the event payload
     input_text = event['input_text']
 
@@ -76,3 +84,4 @@ def synthesize_speech(event, context):
     except Exception as e:
         error_message = f"Error occurred during speech synthesis: {str(e)}"
         return error_message
+
